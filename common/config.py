@@ -12,30 +12,28 @@ from common.utils.singleton import Singleton
 import logging
 
 
-real_path = os.path.dirname(os.path.realpath(__file__))
-curr_path = Path(real_path)
-work_path = str(curr_path.parent)
-LOG_PATH = os.path.join(work_path, "logs")
-CONF_PATH = os.path.join(work_path, "conf")
+CURR_PATH = Path(os.path.dirname(os.path.realpath(__file__)))
+WORK_PATH = str(CURR_PATH.parent)
+LOG_PATH = os.path.join(WORK_PATH, "logs")
+CONF_PATH = os.path.join(WORK_PATH, "conf")
 
-print("[real_path]: ", real_path)
-print("[curr_path]: ", curr_path)
-print("[work_path]: ", work_path)
-print("[LOG_PATH]: ", LOG_PATH)
-print("[CONF_PATH]: ", CONF_PATH)
-# 计算中心端口
-CALC_CENTER_HTTP_PORT = 30238
 
 @Singleton
 class Cfg():
     def __init__(self, path):
-        self.path = path
+        self.conf_file = path
         self.conf = {}
 
     def load_yaml(self):
+        logging.info(f"[conf_file]: {self.conf_file}")
+        logging.info(f"[CONF_PATH]: {CONF_PATH}")
+        logging.info(f"[curr_path]: {CURR_PATH}")
+        logging.info(f"[work_path]: {WORK_PATH}")
+        logging.info(f"[LOG_PATH]: {LOG_PATH}")
+
         try:
-            logging.info(f"正在加载配置文件: {self.path}")
-            with open(self.path, 'r', encoding='utf-8') as f:
+            logging.info(f"正在加载配置文件: {self.conf_file}")
+            with open(self.conf_file, 'r', encoding='utf-8') as f:
                 self.conf = yaml.safe_load(f) or {}
             return self.conf
         except (IOError, yaml.YAMLError) as e:
