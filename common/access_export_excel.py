@@ -1,3 +1,12 @@
+#！/usr/bin/env python3
+# -*- coding: utf-8 -*-
+"""
+@author: <luhx>
+@file: access_export_excel.py
+@time: 2021/01/01 11:00
+@desc: 将access文件中的表导出到excel文件中
+以access数据库中的表名为文件名，将access中的所有表导出为具体的excel文件
+"""
 import os
 import re
 import win32com.client as win32
