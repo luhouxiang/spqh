@@ -207,5 +207,5 @@ marimo/_lsp/
 __marimo__/
 # 此目录下的所有皆是上一目录中的access文件导出，无需上传
 data/Exports/
-spqh/spqh/backtest_output/
+spqh/backtest_output/
 spqh/spqh/logs/
