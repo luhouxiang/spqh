@@ -209,3 +209,4 @@ __marimo__/
 data/Exports/
 spqh/backtest_output/
 spqh/logs/
+data/*.csv
