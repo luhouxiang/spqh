@@ -35,6 +35,7 @@ from typing import Dict, Optional, List
 from datetime import date, datetime
 import numpy as np
 import pandas as pd
+import logging
 
 def setup_matplotlib_backend(prefer_gui: bool = True) -> bool:
     import matplotlib
@@ -361,6 +362,7 @@ TARGET = "agl9"
 # =========================
 def main() -> None:
     SysLogInit('cta_backtest_dict_config.log', "logs")
+    logging.info("abc")
     here = Path(__file__).resolve().parent
     cfg = CONFIG.get(TARGET)
     assert cfg, f"未在 CONFIG 中找到标的：{TARGET}"
