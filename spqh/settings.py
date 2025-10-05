@@ -30,4 +30,17 @@ CONFIG = {
         "capital": 1_000_000,
         "strategy": {"fast_window": 10, "slow_window": 30, "fixed_size": 1},
     },
+    "apl9": {
+        "csv": "spqhapl9.csv",  # 会自动补 volume/open_interest
+        "exchange": "CZCE",
+        "interval": "1d",  # 留空则自动猜
+        "start": "2024-05-10",
+        "end": "2025-03-11",
+        "rate": 0.00025,
+        "slippage": 1,
+        "size": 15,
+        "pricetick": 1,
+        "capital": 1_000_000,
+        "strategy": {"fast_window": 10, "slow_window": 30, "fixed_size": 1},
+    }
 }

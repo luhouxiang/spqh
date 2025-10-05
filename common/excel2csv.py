@@ -2,6 +2,7 @@ import pandas as pd
 import os
 
 import pandas as pd
+from pathlib import Path
 
 def excel_to_csv(input_file: str, output_file: str):
     """
@@ -40,7 +41,15 @@ def excel_to_csv(input_file: str, output_file: str):
 
 if __name__ == "__main__":
     # 示例：当前目录下的输入输出
-    input_path = r"E:\work\py\spqh\data\Exports\spqhagl9.xlsx"   # 修改为你的Excel路径
-    output_path = os.path.splitext(input_path)[0] + ".csv"
+    input_path = r"E:\work\py\spqh\data\Exports\spqhagl9.xlsx"  # 修改为你的Excel路径
 
+    p = Path(input_path)
+
+    filename = p.name  # 'spqhagl9.xlsx'
+    stem = p.stem  # 'spqhagl9'  —— 基本名
+    suffix = p.suffix  # '.xlsx'     —— 后缀
+
+    upper_dir = p.parent.parent  # 上一层路径：E:\work\py\spqh\data
+
+    output_path = os.path.join(upper_dir, f"{stem}.csv")
     excel_to_csv(input_path, output_path)
