@@ -1,6 +1,10 @@
 # main_backtest_multi.py
 from __future__ import annotations
 
+from common.logging_cfg import SysLogInit
+from cfg import g_cfg
+
+import logging
 from pathlib import Path
 from typing import Dict, List, Tuple
 
@@ -10,6 +14,7 @@ from vnpy.trader.constant import Interval, Exchange
 # 仍然复用你已有的配置/工具/策略
 from settings import CONFIG, DATA_PATH, EXPORTS_SUBDIR, OUTPUT_ROOT, TIMEZONE
 from strategies.double_ma import DoubleMaStrategy
+from strategies.double_sy import DoubleSyStrategy
 from utils_backtest import (
     setup_matplotlib_backend,
     guess_interval_from_csv,
@@ -78,7 +83,7 @@ def run_one_symbol(symbol_key: str) -> Tuple[pd.DataFrame, dict, Path]:
     # 导入数据库 + 回测 + 输出（复用你现有工具函数）
     import_csv_to_db(csv_path, symbol, exchange, interval, tz=TIMEZONE)
     df, stats = run_backtest_and_output(
-        strategy_cls=DoubleMaStrategy,
+        strategy_cls=DoubleSyStrategy,
         vt_symbol=vt_symbol,
         interval=interval,
         start_dt=start_dt,
@@ -149,6 +154,9 @@ def build_portfolio_curve(results: List[Tuple[str, pd.DataFrame, dict]]) -> Path
 
 
 def main():
+    SysLogInit('main_backtest_multiple.log', "logs")
+    g_cfg.load_yaml()   # 默认最先加载配置文件
+    logging.info("work begin...")
     # 只初始化一次 GUI/后端（批量时一般不弹窗）
     setup_matplotlib_backend(prefer_gui=False)
 
@@ -169,6 +177,7 @@ def main():
 
     # 组合净值（可选：如果只跑一个，这步自然也能生成“单标的=组合”的曲线）
     build_portfolio_curve(all_results)
+    logging.info("work end.")
 
 
 if __name__ == "__main__":

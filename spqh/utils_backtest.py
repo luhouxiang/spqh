@@ -98,8 +98,49 @@ def import_csv_to_db(csv_path: Path, symbol: str, exchange, interval, tz: Option
         ))
 
     db = get_database()
+    db_path = db.db.database
     db.save_bar_data(bars)
+    import_sy_to_db(df, symbol, exchange, interval, "1", db_path)
     return dt.min().to_pydatetime(), dt.max().to_pydatetime()
+
+
+def _to_text(x):
+    # 统一把 Enum/对象转成字符串（优先 value，其次 name，最后 str）
+    if isinstance(x, str):
+        return x
+    v = getattr(x, "value", None)
+    if isinstance(v, str):
+        return v
+    n = getattr(x, "name", None)
+    if isinstance(n, str):
+        return n
+    return str(x)
+
+
+def import_sy_to_db(df, symbol, exchange, interval, version="1", db_path=None):
+    from common.algo_features_store import ensure_algo_table, upsert_algo_features_many
+    ALGO = "shuangyu"
+    SY_FEATURES = ["lj","qs1","dnl1","qsx1","sx1","qs2","dnl2","qsx2","sx2","phqd","lsqd"]
+
+    tmp = df.copy()
+    tmp.columns = [c.lower().strip() for c in tmp.columns]
+    assert "datetime" in tmp.columns, "缺少 datetime 列"
+
+    symbol_str   = _to_text(symbol)          # 例如 "ag"
+    exchange_str = _to_text(exchange)        # 例如 "SHFE"（来自 Exchange.SHFE.value）
+    interval_str = _to_text(interval)        # 建议统一用 "1d"/"1m" 或 "DAILY"/"MINUTE"
+
+    items = [{
+        "df": tmp[["datetime"] + SY_FEATURES],
+        "symbol": symbol_str,
+        "exchange": exchange_str,
+        "interval": interval_str,
+        "version": str(version),
+    }]
+
+    ensure_algo_table(ALGO, SY_FEATURES, versioned=True, override_path=db_path)
+    n = upsert_algo_features_many(ALGO, items, SY_FEATURES, override_path=db_path)
+    return n
 
 
 def json_default(o):
