@@ -21,6 +21,22 @@ CONFIG = {
         "csv": "spqhagl9.csv",      # 会自动补 volume/open_interest
         "exchange": "SHFE",
         "interval": "1d",           # 留空则自动猜
+        "start": "2024-03-11",
+        "end":   "2024-09-10",
+        "rate": 0.00025,
+        "slippage": 1,
+        "size": 15,
+        "pricetick": 1,
+        "capital": 1_000_000,
+        "strategy": {"fast_window": 10, "slow_window": 30, "fixed_size": 1},
+    }
+}
+
+CONFIG2 = {
+    "agl9": {
+        "csv": "spqhagl9.csv",      # 会自动补 volume/open_interest
+        "exchange": "SHFE",
+        "interval": "1d",           # 留空则自动猜
         "start": "2023-05-10",
         "end":   "2025-08-29",
         "rate": 0.00025,

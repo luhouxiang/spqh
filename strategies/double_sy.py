@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Optional, Tuple, List
+from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -11,329 +11,317 @@ from vnpy_ctastrategy import CtaTemplate
 from vnpy.trader.object import BarData
 from vnpy.trader.utility import ArrayManager
 
+# 双鱼特征字段全集（库内列名）
+SY_COLS = ["lj","qs1","dnl1","qsx1","sx1","qs2","dnl2","qsx2","sx2","phqd","lsqd"]
+
 
 @dataclass
 class SyRow:
-    """双鱼特征的一行数据（用于快速访问）"""
-    lj: float
-    qs1: float
-    dnl1: float
-    qsx1: float
-    sx1: float
-    qs2: float
-    dnl2: float
-    qsx2: float
-    sx2: float
-    phqd: float
-    lsqd: float
+    lj: float = np.nan
+    qs1: float = np.nan
+    dnl1: float = np.nan
+    qsx1: float = np.nan
+    sx1: float = np.nan
+    qs2: float = np.nan
+    dnl2: float = np.nan
+    qsx2: float = np.nan
+    sx2: float = np.nan
+    phqd: float = np.nan
+    lsqd: float = np.nan
+
+
+def _to_naive_index(idx: pd.DatetimeIndex) -> pd.DatetimeIndex:
+    # tz-aware -> 去时区；naive -> 原样返回
+    return idx.tz_convert(None) if getattr(idx, "tz", None) is not None else idx
+
+def _to_naive_ts(ts) -> pd.Timestamp:
+    t = pd.Timestamp(ts)
+    return t.tz_convert(None) if getattr(t, "tzinfo", None) is not None else t
 
 
 class DoubleSyStrategy(CtaTemplate):
     """
-    双鱼策略（多品种可用）
-    规则要点：
-      - 用“昨日信号”决定今天的开/平与区间切换；
-      - 加仓台阶用“昨日 sx1/dnl1”（做多）或“昨日 qsx1/dnl1”（做空）；
-      - 最多5倍（含初始1倍），开盘越过首台阶则按开盘价加第一倍，其余台阶用限价；
-      - 可选 lj 过滤（默认门槛 7）。
+    双鱼策略（只做多；on_start 从数据库加载特征；on_bar 用“昨日指标”交易）
+
+    规则要点（与你最新描述一致）：
+    - 昨日 qsx2=1 → 做多模式；昨日 qsx2=0 → 今日开盘清仓并停止做多
+    - 仓位单位为“手”（fixed_size 决定 1 手对应的下单量），总上限 max_lots（默认 5 手）
+    - 区间重置（昨日 dnl2=1）：今日开盘平掉“昨日前”的仓位，保留昨建，再以开盘价新建 1 手
+    - 加仓（仅当做多，且启用 lj 过滤时 lj≥阈值）：
+        以昨日 sx1、dnl1 形成两级台阶：L1 = sx1 - dnl1；L2 = sx1 - 2*dnl1
+        当日开盘 ≤ L1：先用开盘加 1 手
+        当日最低 ≤ L2：当日总计加到 2 手（若开盘没加过，则 L1、L2 各加 1 手；若开盘加过，则再在 L2 加 1 手）
+        否则若最低 ≤ L1：当日总计加 1 手（限价 L1；若开盘已加过则不再加）
+    - “昨天所建仓位今天不平”（除非昨日 dnl2=1 才触发区间重置）
+
+    数据来源：
+    - on_start() 通过 algo_features_store.load_algo_features(...) 从数据库加载当前品种特征（使用策略参数）
     """
 
     author = "you"
 
-    # ===== 参数 =====
-    fixed_size: int = 1            # 1倍对应的手数
-    max_multiplier: int = 5        # 最大倍数（1~5）
-    lj_threshold: float = 7.0      # 仅当lj>=此值才允许开/加（为0则不启用）
-    use_lj_filter: bool = True     # 是否启用lj过滤
-    algo_name: str = "shuangyu"    # 特征表算法名
-    interval_text: str = "1d"      # 入库时的interval文本（需与你写表一致：如"1d"/"1m"）
-    auto_load_features: bool = True  # 若未注入df，是否自动从数据库加载
-    # 允许通过 setting 注入：algo_features=pd.DataFrame（index=datetime），列包含双鱼字段
+    # === 交易参数 ===
+    fixed_size: int = 1            # 1 手对应的下单数量
+    max_lots: int = 5              # 总仓位上限（1~5）
+    use_lj_filter: bool = True     # 是否启用 lj 过滤
+    lj_threshold: float = 7.0      # lj 门槛（≥此值才允许开/加）
 
-    # ===== 变量（监控用）=====
-    units: int = 0                 # 当前倍数（0~5）
-    mode: str = "flat"             # "flat"|"long"|"short"
-    last_qsx2: int = 0             # 昨日long标志缓存
-    last_sx2: int = 0              # 昨日short标志缓存
+    # === 特征加载参数（由 CONFIG 为每个品种传入） ===
+    algo_name: str = "shuangyu"    # 特征表算法名
+    feature_interval: str = "1d"   # 入库时用于区分间隔的字符串（与写表一致，如 "1d"/"1m"）
+    feature_version: str = "1"     # 特征版本
+    feature_start: str = "1970-01-01 00:00:00"  # 加载起始时间（可用该品种 CONFIG 的 start）
+    feature_end: str   = "2100-01-01 00:00:00"  # 加载结束时间（可用该品种 CONFIG 的 end）
+    db_override_path: str = ""     # 可选：强制指定 sqlite 文件路径（留空=自动探测/回退）
 
     parameters = [
-        "fixed_size", "max_multiplier",
-        "lj_threshold", "use_lj_filter",
-        "algo_name", "interval_text", "auto_load_features"
+        # 交易
+        "fixed_size", "max_lots", "use_lj_filter", "lj_threshold",
+        # 特征加载
+        "algo_name", "feature_interval", "feature_version",
+        "feature_start", "feature_end", "db_override_path",
     ]
-    variables = ["units", "mode", "last_qsx2", "last_sx2"]
+    variables = ["lots", "mode", "last_qsx2", "last_dnl2"]
+
+    # 运行时变量
+    lots: int = 0                  # 当前总手数（0~max_lots）
+    mode: str = "flat"             # "flat"|"long"
+    last_qsx2: int = 0             # 昨日 qsx2（便于观察）
+    last_dnl2: int = 0             # 昨日 dnl2（便于观察）
+
+    # 内部缓存：特征表（index=DatetimeIndex）与“分桶账本”（记录每日新增手数）
+    _feat_df: Optional[pd.DataFrame] = None
+    _feat_idx: Optional[pd.DatetimeIndex] = None
+    _unit_ledger: List[Tuple[pd.Timestamp, int]]  # [(open_ts, lots_that_day), ...]
 
     def __init__(self, cta_engine, strategy_name, vt_symbol, setting):
         super().__init__(cta_engine, strategy_name, vt_symbol, setting)
-        self.am = ArrayManager(100)
+        self.am = ArrayManager(1)
+        self._unit_ledger = []
+        self.db_override_path = None
 
-        # 接收或自动加载特征表
-        self.features_df: Optional[pd.DataFrame] = setting.get("algo_features")
-        self._feat_map: Optional[pd.DataFrame] = None  # 按时间排序的DF（index=DatetimeIndex）
-        self._feat_index: Optional[pd.DatetimeIndex] = None
-
-        if self.features_df is not None:
-            self._prepare_features(self.features_df)
-        elif self.auto_load_features:
-            self._try_auto_load_features()
-        else:
-            self.write_log("未注入双鱼特征，且关闭自动加载；仅做占位。")
-
-    # ========== 初始化与状态 ==========
+    # ---------------- 生命周期 ----------------
     def on_init(self):
         self.write_log("策略初始化")
-        # 预加载一定历史bar用于指标/边界检查
         self.load_bar(50)
+        from vnpy.trader.database import get_database
+        db = get_database()
+        self.db_override_path = db.db.database
 
     def on_start(self):
-        self.write_log("策略启动")
+        """在这里从数据库加载当前品种的双鱼特征"""
+        self.write_log("策略启动：开始加载双鱼特征")
+        try:
+            from common.algo_features_store import load_algo_features
+            from common.args_from_config import compute_run_args_from_config
+            symbol, exchange = self.vt_symbol.split(".")
+            override = None if not self.db_override_path else self.db_override_path
+            args = compute_run_args_from_config(symbol)
+            self.feature_start = args.start_dt
+            self.feature_end = args.end_dt
+            self.feature_interval = args.interval.value
+            self.exchange = args.exchange.value
+
+            df = load_algo_features(
+                algo_name=self.algo_name,
+                symbol=symbol,
+                exchange=exchange,
+                interval=self.feature_interval,
+                start_dt=self.feature_start,
+                end_dt=self.feature_end,
+                feature_cols=SY_COLS,
+                version=self.feature_version,
+                override_path=override,
+            )
+            if df is None or df.empty:
+                self.write_log("双鱼特征为空（检查入库/时间窗口/interval/version）")
+            else:
+                self._prepare_features(df)
+                self.write_log(f"双鱼特征加载完成：{len(self._feat_df)} 条")
+        except Exception as e:
+            self.write_log(f"加载双鱼特征失败：{e}")
 
     def on_stop(self):
         self.write_log("策略停止")
 
-    # ========== 特征载入 ==========
+    # ---------------- 特征准备与访问 ----------------
+    import pandas as pd
+
+
     def _prepare_features(self, df: pd.DataFrame):
-        """确保 index=DatetimeIndex 且列名标准化"""
-        if df is None or len(df) == 0:
-            self._feat_map = None
-            self._feat_index = None
-            self.write_log("双鱼特征为空")
-            return
         x = df.copy()
         x.columns = [c.lower().strip() for c in x.columns]
-        # 只保留需要的列
-        cols = ["lj","qs1","dnl1","qsx1","sx1","qs2","dnl2","qsx2","sx2","phqd","lsqd"]
-        miss = [c for c in cols if c not in x.columns]
-        for c in miss:
-            x[c] = np.nan
-        # index
+        for c in SY_COLS:
+            if c not in x.columns:
+                x[c] = np.nan
         if not isinstance(x.index, pd.DatetimeIndex):
             if "datetime" in x.columns:
                 x["datetime"] = pd.to_datetime(x["datetime"])
                 x = x.set_index("datetime")
             else:
-                raise ValueError("algo_features 需要 index=DatetimeIndex 或包含 'datetime' 列")
+                raise ValueError("algo_features 需 index=DatetimeIndex 或包含 'datetime' 列")
         x = x.sort_index()
-        self._feat_map = x[cols]
-        self._feat_index = x.index
-        self.write_log(f"已载入双鱼特征 {len(self._feat_map)} 条")
+        self._feat_df = x[SY_COLS]
+        self._feat_df.index = _to_naive_index(self._feat_df.index)
+        self._feat_idx = self._feat_df.index
 
-    def _try_auto_load_features(self):
-        """无注入时，尝试从sqlite/同库自动读取该品种的全部双鱼特征"""
-        try:
-            from common.algo_features_store import load_algo_features  # 你之前放的工具模块
-            symbol, exchange = self.vt_symbol.split(".")
-            # 宽范围读取（实际是全量）；interval需与入库一致
-            df = load_algo_features(
-                algo_name=self.algo_name,
-                symbol=symbol,
-                exchange=exchange,
-                interval=self.interval_text,
-                start_dt="1970-01-01 00:00:00",
-                end_dt="2100-01-01 00:00:00",
-                feature_cols=["lj","qs1","dnl1","qsx1","sx1","qs2","dnl2","qsx2","sx2","phqd","lsqd"],
-                version="1",
-            )
-            self._prepare_features(df)
-        except Exception as e:
-            self.write_log(f"自动加载双鱼特征失败：{e}")
-
-    # ========== 工具：取昨日/前日特征 ==========
-    def _get_feat_prev_and_prevprev(self, ts) -> Tuple[Optional[SyRow], Optional[SyRow]]:
-        """返回 (F_{t-1}, F_{t-2})；用 index.asof 逻辑：取 <= ts 的最近记录与其前一条"""
-        if self._feat_map is None or self._feat_index is None or len(self._feat_index) == 0:
+    def _get_prev_feats(self, ts: pd.Timestamp) -> Tuple[Optional[SyRow], Optional[pd.Timestamp]]:
+        """
+        返回 (F_{t-1}, prev_ts)：
+        - prev_ts 为该行特征对应的时间，用于“昨建”判断（账本保留）
+        """
+        if self._feat_df is None or self._feat_idx is None or len(self._feat_idx) == 0:
             return None, None
-        # 找到 <= ts 的位置
-        pos = self._feat_index.searchsorted(pd.Timestamp(ts), side="right") - 1
+        ts = _to_naive_ts(ts)  # ★ 关键：把传入时间也变为 naive
+        pos = self._feat_idx.searchsorted(pd.Timestamp(ts), side="right") - 1
         if pos < 0:
             return None, None
-        prev = self._feat_map.iloc[pos]
-        prevprev = self._feat_map.iloc[pos - 1] if pos - 1 >= 0 else None
+        s = self._feat_df.iloc[pos]
+        prev_ts = self._feat_idx[pos]
 
-        def to_row(s) -> SyRow:
-            return SyRow(
-                lj=float(s.get("lj", np.nan)) if pd.notna(s.get("lj")) else np.nan,
-                qs1=float(s.get("qs1", np.nan)) if pd.notna(s.get("qs1")) else np.nan,
-                dnl1=float(s.get("dnl1", np.nan)) if pd.notna(s.get("dnl1")) else np.nan,
-                qsx1=float(s.get("qsx1", np.nan)) if pd.notna(s.get("qsx1")) else np.nan,
-                sx1=float(s.get("sx1", np.nan)) if pd.notna(s.get("sx1")) else np.nan,
-                qs2=float(s.get("qs2", np.nan)) if pd.notna(s.get("qs2")) else np.nan,
-                dnl2=float(s.get("dnl2", np.nan)) if pd.notna(s.get("dnl2")) else np.nan,
-                qsx2=float(s.get("qsx2", np.nan)) if pd.notna(s.get("qsx2")) else np.nan,
-                sx2=float(s.get("sx2", np.nan)) if pd.notna(s.get("sx2")) else np.nan,
-                phqd=float(s.get("phqd", np.nan)) if pd.notna(s.get("phqd")) else np.nan,
-                lsqd=float(s.get("lsqd", np.nan)) if pd.notna(s.get("lsqd")) else np.nan,
-            )
+        def v(name):
+            val = s.get(name, np.nan)
+            return float(val) if pd.notna(val) else np.nan
 
-        r1 = to_row(prev)
-        r2 = to_row(prevprev) if prevprev is not None else None
-        return r1, r2
+        row = SyRow(
+            lj=v("lj"), qs1=v("qs1"), dnl1=v("dnl1"), qsx1=v("qsx1"), sx1=v("sx1"),
+            qs2=v("qs2"), dnl2=v("dnl2"), qsx2=v("qsx2"), sx2=v("sx2"),
+            phqd=v("phqd"), lsqd=v("lsqd"),
+        )
+        return row, prev_ts
 
-    # ========== 下单辅助 ==========
-    def _base_size(self) -> int:
+    # ---------------- 账本与下单辅助 ----------------
+    def _base_lot(self) -> int:
         return max(int(self.fixed_size), 1)
 
-    def _max_units(self) -> int:
-        return max(int(self.max_multiplier), 1)
+    def _max_lots(self) -> int:
+        return max(1, min(int(self.max_lots), 5))
+
+    def _ledger_add(self, open_ts: pd.Timestamp, lots_to_add: int):
+        if lots_to_add <= 0:
+            return
+        if self._unit_ledger and self._unit_ledger[-1][0] == open_ts:
+            ts, old = self._unit_ledger[-1]
+            self._unit_ledger[-1] = (ts, old + lots_to_add)
+        else:
+            self._unit_ledger.append((open_ts, lots_to_add))
+        self.lots += lots_to_add
+
+    def _ledger_close_older_than(self, keep_ts: pd.Timestamp) -> int:
+        """平掉开仓时间 < keep_ts 的所有手数（保留昨建）"""
+        to_keep: List[Tuple[pd.Timestamp, int]] = []
+        to_close = 0
+        for ts, n in self._unit_ledger:
+            if ts < keep_ts:
+                to_close += n
+            else:
+                to_keep.append((ts, n))
+        self._unit_ledger = to_keep
+        self.lots -= to_close
+        return to_close
 
     def _flatten_all(self, price: float):
-        """以给定价格平掉所有持仓"""
         if self.pos > 0:
             self.sell(price, volume=abs(self.pos))
-        elif self.pos < 0:
-            self.cover(price, volume=abs(self.pos))
-        self.units = 0
+        self._unit_ledger = []
+        self.lots = 0
         self.mode = "flat"
 
-    def _open_long_units(self, add_units: int, price_open: float, limit_prices: List[float]):
-        """做多：第一倍可用开盘，其余用限价"""
-        add_units = int(add_units)
-        if add_units <= 0:
-            return
-        size_per_unit = self._base_size()
-        # 首次优先用开盘（符合“开盘低于首台阶则以开盘加一次”）
-        used_open = False
-        if price_open is not None and add_units > 0:
-            self.buy(price_open, volume=size_per_unit)
-            add_units -= 1
-            used_open = True
-        # 余下用限价台阶（由低到高依次）
-        for lp in limit_prices:
-            if add_units <= 0:
-                break
-            self.buy(lp, volume=size_per_unit)
-            add_units -= 1
-
-    def _open_short_units(self, add_units: int, price_open: float, limit_prices: List[float]):
-        """做空：第一倍可用开盘，其余用限价"""
-        add_units = int(add_units)
-        if add_units <= 0:
-            return
-        size_per_unit = self._base_size()
-        used_open = False
-        if price_open is not None and add_units > 0:
-            self.short(price_open, volume=size_per_unit)
-            add_units -= 1
-            used_open = True
-        for lp in limit_prices:
-            if add_units <= 0:
-                break
-            self.short(lp, volume=size_per_unit)
-            add_units -= 1
-
-    # ========== 主体逻辑 ==========
+    # ---------------- 主体逻辑（只做多，日内最多加2手） ----------------
     def on_bar(self, bar: BarData):
         self.am.update_bar(bar)
         if not self.am.inited:
             return
 
-        # 取昨日/前日特征（按当前bar时间向前）
-        f_prev, f_prevprev = self._get_feat_prev_and_prevprev(bar.datetime)
+        f_prev, prev_ts = self._get_prev_feats(bar.datetime)
         if f_prev is None:
             self.put_event()
             return
 
-        # 方向信号（昨日）
-        long_allowed = (int(f_prev.qsx2) == 1)
-        short_allowed = (int(f_prev.sx2) == -1)
-        long_prev = int(f_prevprev.qsx2) == 1 if f_prevprev else False
-        short_prev = int(f_prevprev.sx2) == -1 if f_prevprev else False
+        qsx2_prev = int(f_prev.qsx2) if not np.isnan(f_prev.qsx2) else 0
+        dnl2_prev = int(f_prev.dnl2) if not np.isnan(f_prev.dnl2) else 0
+        self.last_qsx2 = qsx2_prev
+        self.last_dnl2 = dnl2_prev
 
-        # 可选 lj 过滤
-        def pass_lj():
-            return (not self.use_lj_filter) or (
-                not np.isnan(f_prev.lj) and f_prev.lj >= float(self.lj_threshold)
-            )
+        def pass_lj() -> bool:
+            return (not self.use_lj_filter) or (pd.notna(f_prev.lj) and f_prev.lj >= float(self.lj_threshold))
 
-        # 1) —— 区间起始（以开盘切换+建仓一倍）
-        if long_allowed and not long_prev:
-            # 新的做多区间开启
-            self._flatten_all(bar.open_price)
-            if pass_lj():
-                self.buy(bar.open_price, self._base_size())
-                self.units = 1
-                self.mode = "long"
-                self.write_log(f"做多区间开启@{bar.open_price}，units=1")
+        max_lots = self._max_lots()
+        lot_unit = self._base_lot()
 
-        if short_allowed and not short_prev:
-            # 新的做空区间开启
-            self._flatten_all(bar.open_price)
-            if pass_lj():
-                self.short(bar.open_price, self._base_size())
-                self.units = 1
-                self.mode = "short"
-                self.write_log(f"做空区间开启@{bar.open_price}，units=1")
-
-        # 2) —— 区间终止（以开盘平仓）
-        if self.mode == "long" and int(f_prev.qsx2) == 0:
+        # 0) 停止：昨日 qsx2=0 → 今日开盘清仓并停止
+        if qsx2_prev == 0:
             if self.pos > 0:
-                self.sell(bar.open_price, abs(self.pos))
-            self.units = 0
+                self.sell(bar.open_price, volume=abs(self.pos))
+            self._unit_ledger = []
+            self.lots = 0
             self.mode = "flat"
-            self.write_log(f"做多区间结束@{bar.open_price}")
+            self.put_event()
+            return
 
-        if self.mode == "short" and int(f_prev.sx2) == 0:
-            if self.pos < 0:
-                self.cover(bar.open_price, abs(self.pos))
-            self.units = 0
-            self.mode = "flat"
-            self.write_log(f"做空区间结束@{bar.open_price}")
+        # 1) 做多模式（qsx2_prev == 1）
+        # 1.1 区间重置：昨日 dnl2==1
+        if dnl2_prev == 1:
+            if prev_ts is not None and self.lots > 0:
+                close_lots = self._ledger_close_older_than(prev_ts)
+                if close_lots > 0:
+                    self.sell(bar.open_price, volume=close_lots * lot_unit)
+                    self.write_log(f"区间重置：平掉更早仓位 {close_lots} 手 @{bar.open_price}")
+            if pass_lj():
+                self.buy(bar.open_price, volume=lot_unit)
+                self._ledger_add(bar.datetime, 1)
+                self.mode = "long"
+                self.write_log(f"区间开启：开盘建 1 手，现持 {self.lots} 手")
 
-        # 3) —— 加仓逻辑（最多到 max_multiplier）
-        max_units = self._max_units()
-        # 做多区间
-        if self.mode == "long" and long_allowed and pass_lj():
-            # 昨日台阶：sx1, dnl1
-            if not np.isnan(f_prev.sx1) and not np.isnan(f_prev.dnl1) and f_prev.dnl1 > 0:
-                thresholds = [f_prev.sx1 - k * f_prev.dnl1 for k in range(1, max_units)]  # L1..L4
-                desired = 1  # 初始1倍
-                # A) 开盘下破首台阶 → 至少2倍
-                if bar.open_price <= thresholds[0]:
-                    desired = max(desired, 2)
-                # B) 盘中最低触及更深台阶
-                crossed = sum(bar.low_price <= th for th in thresholds)
-                desired = max(desired, 1 + crossed)
-                desired = min(desired, max_units)
+        # 1.2 当日加仓（仅两级台阶 L1/L2；当日最多加2手；总仓位不超过 max_lots）
+        if pass_lj() and pd.notna(f_prev.sx1) and pd.notna(f_prev.dnl1) and f_prev.dnl1 > 0:
+            L1 = f_prev.sx1 - 1.0 * f_prev.dnl1
+            L2 = f_prev.sx1 - 2.0 * f_prev.dnl1
 
-                if desired > self.units:
-                    to_add = desired - self.units
-                    # 第一倍（若还没>=2且满足开盘条件）用开盘，其余用限价台阶（从靠近的开始）
-                    # 选择用于限价的台阶价：从 L(self.units) 之后的价格
-                    start_idx = self.units  # 已持有n倍，下一目标是第 n+1 个台阶
-                    limit_prices = thresholds[start_idx: start_idx + to_add]
-                    # 如果开盘条件不满足，就全部用限价；若满足，open会先占掉1倍
-                    use_open = (bar.open_price <= thresholds[0]) and (self.units < 2)
-                    self._open_long_units(
-                        add_units=to_add,
-                        price_open=bar.open_price if use_open else None,
-                        limit_prices=limit_prices
-                    )
-                    self.units += to_add
+            daily_target_add = 0
+            open_add = False
 
-        # 做空区间（对称）
-        if self.mode == "short" and short_allowed and pass_lj():
-            if not np.isnan(f_prev.qsx1) and not np.isnan(f_prev.dnl1) and f_prev.dnl1 > 0:
-                thresholds = [f_prev.qsx1 + k * f_prev.dnl1 for k in range(1, max_units)]  # U1..U4
-                desired = 1
-                if bar.open_price >= thresholds[0]:
-                    desired = max(desired, 2)
-                crossed = sum(bar.high_price >= th for th in thresholds)
-                desired = max(desired, 1 + crossed)
-                desired = min(desired, max_units)
+            # 开盘触发 L1
+            if bar.open_price <= L1:
+                daily_target_add = 1
+                open_add = True
 
-                if desired > self.units:
-                    to_add = desired - self.units
-                    start_idx = self.units
-                    limit_prices = thresholds[start_idx: start_idx + to_add]
-                    use_open = (bar.open_price >= thresholds[0]) and (self.units < 2)
-                    self._open_short_units(
-                        add_units=to_add,
-                        price_open=bar.open_price if use_open else None,
-                        limit_prices=limit_prices
-                    )
-                    self.units += to_add
+            # 盘中触发
+            if bar.low_price <= L2:
+                daily_target_add = 2
+            elif bar.low_price <= L1:
+                daily_target_add = max(daily_target_add, 1)
 
-        # 缓存昨日信号便于监控
-        self.last_qsx2 = int(f_prev.qsx2) if not np.isnan(f_prev.qsx2) else 0
-        self.last_sx2  = int(f_prev.sx2)  if not np.isnan(f_prev.sx2)  else 0
+            capacity = max_lots - self.lots
+            to_add = min(daily_target_add, max(0, capacity))
+
+            if to_add > 0:
+                # 先用开盘加（若命中条件且仍有容量）
+                if open_add and to_add > 0:
+                    self.buy(bar.open_price, volume=lot_unit)
+                    self._ledger_add(bar.datetime, 1)
+                    to_add -= 1
+                    self.write_log(f"开盘加仓 1 手，现持 {self.lots} 手")
+
+                # 剩余用限价挂台阶
+                if to_add > 0:
+                    if bar.low_price <= L2:
+                        # 目标两手：若开盘没加过 -> L1,L2 各1；若已加过 -> 再在 L2 1手
+                        if not open_add and to_add > 0:
+                            self.buy(L1, volume=lot_unit)
+                            self._ledger_add(bar.datetime, 1)
+                            to_add -= 1
+                            self.write_log(f"限价加仓 1 手@L1={L1:.4f}，现持 {self.lots} 手")
+                        if to_add > 0:
+                            self.buy(L2, volume=lot_unit)
+                            self._ledger_add(bar.datetime, 1)
+                            to_add -= 1
+                            self.write_log(f"限价加仓 1 手@L2={L2:.4f}，现持 {self.lots} 手")
+                    elif bar.low_price <= L1:
+                        if not open_add and to_add > 0:
+                            self.buy(L1, volume=lot_unit)
+                            self._ledger_add(bar.datetime, 1)
+                            to_add -= 1
+                            self.write_log(f"限价加仓 1 手@L1={L1:.4f}，现持 {self.lots} 手")
+
         self.put_event()

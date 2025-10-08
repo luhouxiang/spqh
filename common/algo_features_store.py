@@ -1,5 +1,6 @@
 # algo_features_store.py
 from __future__ import annotations
+
 import sqlite3
 from pathlib import Path
 from typing import Iterable, List, Tuple, Dict, Optional
@@ -18,58 +19,11 @@ def _guess_sqlite_path_via_vnpy() -> Optional[Path]:
         db = get_database()
     except Exception:
         return None
-
-    # 可能的属性名：db_path / database / path / engine.url.database ...
-    # 不同版本实现不一样，这里尽量“反射式”地找。
-    candidates = []
-    for attr in ("db_path", "database", "path", "file", "filename"):
-        p = getattr(db, attr, None)
-        if isinstance(p, (str, Path)):
-            candidates.append(Path(p))
-
-    # SQLAlchemy 引擎的可能性
-    eng = getattr(db, "engine", None)
-    if eng is not None:
-        try:
-            # SQLAlchemy URL 的 database 字段
-            url_db = getattr(getattr(eng, "url", None), "database", None)
-            if url_db:
-                candidates.append(Path(url_db))
-        except Exception:
-            pass
-
-    for p in candidates:
-        try:
-            if p and p.suffix.lower() in (".db", ".sqlite", ".sqlite3"):
-                # 相对路径转绝对
-                return p.resolve()
-        except Exception:
-            continue
-
-    return None
-
-
-def _get_features_db_path(override_path: Optional[Path] = None) -> Path:
-    """
-    优先：外部指定 override_path；
-    其次：若 vn.py 后端是 SQLite，则复用同一个 .db；
-    否则：回退到 ~/.vntrader/features.db
-    """
-    if override_path:
-        return Path(override_path).resolve()
-
-    p = _guess_sqlite_path_via_vnpy()
-    if p is not None:
-        return p
-
-    # 回退：独立 features.db
-    home = Path.home() / ".vntrader"
-    home.mkdir(parents=True, exist_ok=True)
-    return (home / "features.db").resolve()
+    return Path(db.db.database)
 
 
 def _open_conn(override_path: Optional[Path] = None) -> sqlite3.Connection:
-    db_path = _get_features_db_path(override_path)
+    db_path = _guess_sqlite_path_via_vnpy()
     # sqlite3 会在同库内新建表，不会影响 vn.py 原有表
     return sqlite3.connect(db_path)
 

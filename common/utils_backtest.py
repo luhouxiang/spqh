@@ -9,6 +9,7 @@ from typing import Optional, List, Type
 import numpy as np
 import pandas as pd
 import matplotlib
+import pytz
 
 
 def setup_matplotlib_backend(prefer_gui: bool = True) -> bool:
@@ -158,6 +159,8 @@ def run_backtest_and_output(
 ):
     from vnpy_ctastrategy.backtesting import BacktestingEngine
     import matplotlib.pyplot as plt
+    start_dt = start_dt.to_pydatetime()
+    end_dt = end_dt.to_pydatetime()
 
     engine = BacktestingEngine()
     engine.set_parameters(

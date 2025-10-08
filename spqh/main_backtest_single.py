@@ -3,9 +3,9 @@ from pathlib import Path
 import pandas as pd
 from vnpy.trader.constant import Interval, Exchange
 
-from settings import CONFIG, TARGET, DATA_PATH, EXPORTS_SUBDIR, OUTPUT_ROOT, TIMEZONE
+from common.settings import CONFIG, TARGET, DATA_PATH, EXPORTS_SUBDIR, OUTPUT_ROOT, TIMEZONE
 from strategies.double_ma import DoubleMaStrategy
-from utils_backtest import (
+from common.utils_backtest import (
     setup_matplotlib_backend, guess_interval_from_csv, import_csv_to_db, run_backtest_and_output
 )
 
