@@ -10,7 +10,7 @@ import pandas as pd
 from vnpy_ctastrategy import CtaTemplate
 from vnpy.trader.object import BarData
 from vnpy.trader.utility import ArrayManager
-
+import logging
 # 双鱼特征字段全集（库内列名）
 SY_COLS = ["lj","qs1","dnl1","qsx1","sx1","qs2","dnl2","qsx2","sx2","phqd","lsqd"]
 
@@ -172,7 +172,6 @@ class DoubleSyStrategy(CtaTemplate):
         """
         if self._feat_df is None or self._feat_idx is None or len(self._feat_idx) == 0:
             return None, None
-        ts = _to_naive_ts(ts)  # ★ 关键：把传入时间也变为 naive
         pos = self._feat_idx.searchsorted(pd.Timestamp(ts), side="right") - 1
         if pos < 0:
             return None, None
@@ -197,7 +196,8 @@ class DoubleSyStrategy(CtaTemplate):
     def _max_lots(self) -> int:
         return max(1, min(int(self.max_lots), 5))
 
-    def _ledger_add(self, open_ts: pd.Timestamp, lots_to_add: int):
+    def _ledger_add(self, datetime, lots_to_add: int):
+        open_ts = _to_naive_ts(datetime)
         if lots_to_add <= 0:
             return
         if self._unit_ledger and self._unit_ledger[-1][0] == open_ts:
@@ -233,7 +233,7 @@ class DoubleSyStrategy(CtaTemplate):
         if not self.am.inited:
             return
 
-        f_prev, prev_ts = self._get_prev_feats(bar.datetime)
+        f_prev, prev_ts = self._get_prev_feats(_to_naive_ts(bar.datetime))
         if f_prev is None:
             self.put_event()
             return
@@ -323,5 +323,5 @@ class DoubleSyStrategy(CtaTemplate):
                             self._ledger_add(bar.datetime, 1)
                             to_add -= 1
                             self.write_log(f"限价加仓 1 手@L1={L1:.4f}，现持 {self.lots} 手")
-
+        logging.info(bar.datetime)
         self.put_event()

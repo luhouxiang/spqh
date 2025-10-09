@@ -9,7 +9,7 @@ except Exception:
     DATA_PATH = Path(__file__).parent
 
 EXPORTS_SUBDIR = "Exports"
-OUTPUT_ROOT = Path(__file__).parent / "backtest_output"
+OUTPUT_ROOT = DATA_PATH / "backtest_output"
 TIMEZONE = "Asia/Shanghai"
 
 # 当前要回测的标的键
@@ -22,7 +22,7 @@ CONFIG = {
         "exchange": "SHFE",
         "interval": "1d",           # 留空则自动猜
         "start": "2024-03-11",
-        "end":   "2024-09-10",
+        "end":   "2025-09-10",
         "rate": 0.00025,
         "slippage": 1,
         "size": 15,
