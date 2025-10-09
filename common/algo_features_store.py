@@ -5,6 +5,7 @@ import sqlite3
 from pathlib import Path
 from typing import Iterable, List, Tuple, Dict, Optional
 import pandas as pd
+from common.datetime_normalize import normalize_datetime_columns
 
 # ---------------------------
 # 内部：定位 SQLite 路径
@@ -86,6 +87,9 @@ def upsert_algo_features(
 
     # 统一列
     need = [datetime_col] + list(feature_cols)
+    # 强制将 DataFrame 的 datetime 列标准化为 pandas.Timestamp
+    df = df.copy()
+    df[datetime_col] = pd.to_datetime(df[datetime_col], errors="raise")
     for c in need:
         if c not in df.columns:
             df[c] = pd.NA
@@ -150,6 +154,7 @@ def load_algo_features(
     """
     按时间段读取算法特征，返回 index=datetime 的 DataFrame。
     """
+    # 注意：本函数将返回 index 为 pandas.DatetimeIndex（Timestamp 标量）
     tname = table_name_for_algo(algo_name)
     start_s = pd.to_datetime(start_dt).strftime("%Y-%m-%d %H:%M:%S")
     end_s   = pd.to_datetime(end_dt).strftime("%Y-%m-%d %H:%M:%S")
@@ -211,6 +216,8 @@ def upsert_from_csv(
     override_path: Optional[Path] = None,
 ) -> int:
     df = pd.read_csv(csv_path)
+
+    df = normalize_datetime_columns(df, prefer=["datetime"])
     # 统一小写列名
     df.columns = [c.lower().strip() for c in df.columns]
     if datetime_col.lower() not in df.columns:

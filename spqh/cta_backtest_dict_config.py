@@ -35,6 +35,7 @@ from typing import Dict, Optional, List
 from datetime import date, datetime
 import numpy as np
 import pandas as pd
+from common.datetime_normalize import normalize_datetime_columns
 import logging
 
 def setup_matplotlib_backend(prefer_gui: bool = True) -> bool:
@@ -195,6 +196,7 @@ def import_csv_to_db(
     assert csv_path.exists(), f"CSV 不存在：{csv_path}"
 
     df = pd.read_csv(csv_path)
+    df = normalize_datetime_columns(df, prefer=["datetime"])
     df.columns = [c.lower().strip() for c in df.columns]
 
     need_base = {"datetime", "open", "high", "low", "close"}
@@ -209,6 +211,8 @@ def import_csv_to_db(
         df["open_interest"] = 0
 
     dt = pd.to_datetime(df["datetime"], errors="raise")
+    # 保证列本身为 Timestamp（datetime64[ns]）
+    df["datetime"] = dt
     if tz:
         # 本地化到 tz，再转为 naive（无时区）
         try:
@@ -383,10 +387,15 @@ def main() -> None:
 
     # 读CSV，准备时间与频率
     df = pd.read_csv(csv_path)
+
+
+    df = normalize_datetime_columns(df, prefer=["datetime"])
     df.columns = [c.lower().strip() for c in df.columns]
     assert "datetime" in df.columns, "CSV 必须包含 datetime 列"
     dt_series = pd.to_datetime(df["datetime"], errors="raise")
 
+    # 保证列本身为 Timestamp（datetime64[ns]）
+    df["datetime"] = dt_series
     # interval
     interval_text = str(cfg.get("interval", "")).strip().lower()
     if interval_text in ("1d", "d", "day", "daily"):

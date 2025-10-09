@@ -6,6 +6,7 @@ from typing import List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
+from common.datetime_normalize import normalize_datetime_columns
 
 from vnpy_ctastrategy import CtaTemplate
 from vnpy.trader.object import BarData
@@ -164,6 +165,8 @@ class DoubleSyStrategy(CtaTemplate):
         self._feat_df = x[SY_COLS]
         self._feat_df.index = _to_naive_index(self._feat_df.index)
         self._feat_idx = self._feat_df.index
+        # 进一步确保所有时间列统一为 Timestamp
+        self._feat_df = normalize_datetime_columns(self._feat_df, prefer=["datetime"])
 
     def _get_prev_feats(self, ts: pd.Timestamp) -> Tuple[Optional[SyRow], Optional[pd.Timestamp]]:
         """

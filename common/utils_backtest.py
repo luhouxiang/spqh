@@ -8,6 +8,7 @@ from typing import Optional, List, Type
 
 import numpy as np
 import pandas as pd
+from common.datetime_normalize import normalize_datetime_columns
 import matplotlib
 import pytz
 
@@ -69,6 +70,8 @@ def import_csv_to_db(csv_path: Path, symbol: str, exchange, interval, tz: Option
 
     assert csv_path.exists(), f"CSV 不存在：{csv_path}"
     df = pd.read_csv(csv_path)
+
+    df = normalize_datetime_columns(df, prefer=["datetime"])
     df.columns = [c.lower().strip() for c in df.columns]
     need = {"datetime","open","high","low","close"}
     miss = need - set(df.columns)
@@ -81,6 +84,8 @@ def import_csv_to_db(csv_path: Path, symbol: str, exchange, interval, tz: Option
         df["open_interest"] = 0
 
     dt = pd.to_datetime(df["datetime"], errors="raise")
+    # 保证列本身为 Timestamp（datetime64[ns]）
+    df["datetime"] = dt
     if tz:
         try:
             dt = dt.dt.tz_localize(tz).dt.tz_convert(None)
@@ -145,7 +150,7 @@ def import_sy_to_db(df, symbol, exchange, interval, version="1", db_path=None):
 
 
 def json_default(o):
-    if isinstance(o, (date, datetime)):  return o.isoformat()
+    if isinstance(o, (date, datetime)) or isinstance(o, pd.Timestamp):  return pd.Timestamp(o).isoformat()
     if isinstance(o, (np.integer,)):     return int(o)
     if isinstance(o, (np.floating,)):    return float(o)
     if isinstance(o, (np.bool_,)):       return bool(o)

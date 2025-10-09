@@ -5,6 +5,7 @@ from typing import Iterable, List, Tuple, Dict, Optional, Any
 
 from pathlib import Path
 import pandas as pd
+from common.datetime_normalize import normalize_datetime_columns
 from vnpy.trader.constant import Interval, Exchange
 from common.config import CONF_PATH, DATA_PATH
 from common.settings import CONFIG, TARGET, DATA_PATH, EXPORTS_SUBDIR, OUTPUT_ROOT, TIMEZONE

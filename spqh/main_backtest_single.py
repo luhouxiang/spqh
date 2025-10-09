@@ -1,6 +1,7 @@
 # main_backtest_single.py
 from pathlib import Path
 import pandas as pd
+from common.datetime_normalize import normalize_datetime_columns
 from vnpy.trader.constant import Interval, Exchange
 
 from common.settings import CONFIG, TARGET, DATA_PATH, EXPORTS_SUBDIR, OUTPUT_ROOT, TIMEZONE
@@ -27,9 +28,13 @@ def main():
 
     # 3) 推断 interval & 时间范围
     df = pd.read_csv(csv_path)
+
+    df = normalize_datetime_columns(df, prefer=["datetime"])
     df.columns = [c.lower().strip() for c in df.columns]
     dt_series = pd.to_datetime(df["datetime"], errors="raise")
 
+    # 保证列本身为 Timestamp（datetime64[ns]）
+    df["datetime"] = dt_series
     txt = str(cfg.get("interval","")).lower()
     if txt in ("1d","d","day","daily"): interval = Interval.DAILY
     elif txt in ("60m","1h","h","hour"): interval = Interval.HOUR

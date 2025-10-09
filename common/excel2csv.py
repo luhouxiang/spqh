@@ -1,4 +1,5 @@
 import pandas as pd
+from common.datetime_normalize import normalize_datetime_columns
 import os
 
 import pandas as pd
@@ -12,6 +13,8 @@ def excel_to_csv(input_file: str, output_file: str):
     # 读取Excel
     df = pd.read_excel(input_file)
 
+
+    df = normalize_datetime_columns(df, prefer=["datetime"])
     # 映射：中文列名 -> 英文列名
     rename_map = {
         "日期": "datetime",
