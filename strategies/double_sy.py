@@ -11,6 +11,8 @@ from common.datetime_normalize import normalize_datetime_columns
 from vnpy_ctastrategy import CtaTemplate
 from vnpy.trader.object import BarData
 from vnpy.trader.utility import ArrayManager
+from vnpy.trader.constant import Interval, Direction, Offset
+
 import logging
 # 双鱼特征字段全集（库内列名）
 SY_COLS = ["lj","qs1","dnl1","qsx1","sx1","qs2","dnl2","qsx2","sx2","phqd","lsqd"]
@@ -40,7 +42,32 @@ def _to_naive_ts(ts) -> pd.Timestamp:
     return t.tz_convert(None) if getattr(t, "tzinfo", None) is not None else t
 
 
-class DoubleSyStrategy(CtaTemplate):
+class LoggingCtaTemplate(CtaTemplate):
+    def __init__(self, cta_engine, strategy_name, vt_symbol, setting):
+        super().__init__(cta_engine, strategy_name, vt_symbol, setting)
+        pass
+
+        # 重写：拦截并记日志，再调用父类的 send_order
+
+    def send_order(
+            self,
+            direction: Direction,
+            offset: Offset,
+            price: float,
+            volume: float,
+            stop: bool = False,
+            lock: bool = False,
+            net: bool = False,
+    ) -> list[str]:
+        # 调用父类真正下单
+        logging.info(f"send_order: {direction}, {offset}, {volume}, {price}")
+        orderids = super().send_order(direction, offset, price, volume, stop, lock, net)
+        return orderids
+
+
+# 下单前的快照（回测里 pos 会在撮合后改变）
+
+class DoubleSyStrategy(LoggingCtaTemplate):
     """
     双鱼策略（只做多；on_start 从数据库加载特征；on_bar 用“昨日指标”交易）
 
@@ -235,6 +262,7 @@ class DoubleSyStrategy(CtaTemplate):
         self.am.update_bar(bar)
         if not self.am.inited:
             return
+        logging.info(f"on_bar: {bar.datetime}")
 
         f_prev, prev_ts = self._get_prev_feats(_to_naive_ts(bar.datetime))
         if f_prev is None:
@@ -255,7 +283,10 @@ class DoubleSyStrategy(CtaTemplate):
         # 0) 停止：昨日 qsx2=0 → 今日开盘清仓并停止
         if qsx2_prev == 0:
             if self.pos > 0:
-                self.sell(bar.open_price, volume=abs(self.pos))
+                logging.info("平多")
+                self.sell(bar.open_price, volume=abs(self.pos))  # 多头，平多
+            elif self.pos < 0:
+                self.cover(bar.open_price, volume=abs(self.pos))    # 空头， 平空
             self._unit_ledger = []
             self.lots = 0
             self.mode = "flat"
@@ -268,10 +299,10 @@ class DoubleSyStrategy(CtaTemplate):
             if prev_ts is not None and self.lots > 0:
                 close_lots = self._ledger_close_older_than(prev_ts)
                 if close_lots > 0:
-                    self.sell(bar.open_price, volume=close_lots * lot_unit)
+                    self.sell(bar.open_price, volume=abs(close_lots * lot_unit))
                     self.write_log(f"区间重置：平掉更早仓位 {close_lots} 手 @{bar.open_price}")
             if pass_lj():
-                self.buy(bar.open_price, volume=lot_unit)
+                self.buy(bar.open_price, volume=abs(lot_unit))
                 self._ledger_add(bar.datetime, 1)
                 self.mode = "long"
                 self.write_log(f"区间开启：开盘建 1 手，现持 {self.lots} 手")
@@ -301,7 +332,7 @@ class DoubleSyStrategy(CtaTemplate):
             if to_add > 0:
                 # 先用开盘加（若命中条件且仍有容量）
                 if open_add and to_add > 0:
-                    self.buy(bar.open_price, volume=lot_unit)
+                    self.buy(bar.open_price, volume=abs(lot_unit))
                     self._ledger_add(bar.datetime, 1)
                     to_add -= 1
                     self.write_log(f"开盘加仓 1 手，现持 {self.lots} 手")
@@ -311,20 +342,20 @@ class DoubleSyStrategy(CtaTemplate):
                     if bar.low_price <= L2:
                         # 目标两手：若开盘没加过 -> L1,L2 各1；若已加过 -> 再在 L2 1手
                         if not open_add and to_add > 0:
-                            self.buy(L1, volume=lot_unit)
+                            self.buy(L1, volume=abs(lot_unit))
                             self._ledger_add(bar.datetime, 1)
                             to_add -= 1
                             self.write_log(f"限价加仓 1 手@L1={L1:.4f}，现持 {self.lots} 手")
                         if to_add > 0:
-                            self.buy(L2, volume=lot_unit)
+                            self.buy(L2, volume=abs(lot_unit))
                             self._ledger_add(bar.datetime, 1)
                             to_add -= 1
                             self.write_log(f"限价加仓 1 手@L2={L2:.4f}，现持 {self.lots} 手")
                     elif bar.low_price <= L1:
                         if not open_add and to_add > 0:
-                            self.buy(L1, volume=lot_unit)
+                            self.buy(L1, volume=abs(lot_unit))
                             self._ledger_add(bar.datetime, 1)
                             to_add -= 1
                             self.write_log(f"限价加仓 1 手@L1={L1:.4f}，现持 {self.lots} 手")
-        logging.info(bar.datetime)
+
         self.put_event()
