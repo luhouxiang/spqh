@@ -21,8 +21,8 @@ CONFIG = {
         "csv": "spqhagl9.csv",      # 会自动补 volume/open_interest
         "exchange": "SHFE",
         "interval": "1d",           # 留空则自动猜
-        "start": "2024-03-11",
-        "end":   "2024-10-10",
+        "start": "2024-07-11",
+        "end":   "2024-09-25",
         "rate": 0.00025,
         "slippage": 1,
         "size": 15,

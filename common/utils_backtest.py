@@ -276,8 +276,10 @@ def _find_col(df, candidates):
     return None
 
 
+
 def _save_price_trades_and_indicators_combined(df, out_dir: Path, fast_window=10, slow_window=30):
     import pandas as pd
+    import numpy as np
     import matplotlib.pyplot as plt
 
     # ① 决定横轴（优先 DatetimeIndex/列 → 不存在才退化为序号）
@@ -354,25 +356,123 @@ def _save_price_trades_and_indicators_combined(df, out_dir: Path, fast_window=10
     plt.figure(figsize=(12, 6))
     plt.plot(x, df[price_col], label=price_col)
 
-    # Open Long：红色 ▲（上三角）
+    import numpy as np
+    import pandas as pd
+
+    ax = plt.gca()
+
+    def _find_pos_col(df):
+        # 优先 end_pos，其次 position/pos/net_pos，再次 start_pos
+        for cands in [
+            ("end_pos", "pos_end", "end_position"),
+            ("position", "pos", "net_pos"),
+            ("start_pos", "pos_start", "start_position")
+        ]:
+            for k in cands:
+                for col in df.columns:
+                    if col.lower() == k:
+                        return col
+        return None
+
+    pos_col = _find_pos_col(df)
+
+    # 横轴到行号的定位（兼容 DatetimeIndex 和数值索引）
+    x_seq = x  # 上文已有
+    if isinstance(x_seq, (pd.DatetimeIndex, pd.Series)):
+        x_idx = pd.DatetimeIndex(x_seq) if not isinstance(x_seq, pd.DatetimeIndex) else x_seq
+
+        def _to_naive_ts(v):
+            t = pd.Timestamp(v)
+            return t.tz_convert(None) if getattr(t, "tzinfo", None) is not None else t
+
+        def _locate_row(xv):
+            # 先尝试精确匹配，不行则用 searchsorted 找 <= xv 的位置
+            try:
+                j = x_idx.get_loc(_to_naive_ts(xv))
+                if isinstance(j, slice):
+                    return j.start
+                return int(j)
+            except Exception:
+                xv2 = _to_naive_ts(xv)
+                j = x_idx.searchsorted(xv2, side="right") - 1
+                return int(j) if 0 <= j < len(df) else None
+    else:
+        # 数值横轴直接当作索引位置（保底）
+        def _locate_row(xv):
+            try:
+                j = int(xv)
+                return j if 0 <= j < len(df) else None
+            except Exception:
+                return None
+
+    def _pos_at_x(xv):
+        if pos_col is None:
+            return 0  # 没有持仓列时兜底为 0
+        j = _locate_row(xv)
+        if j is None:
+            return 0
+        try:
+            v = df.iloc[j][pos_col]
+            return 0 if pd.isna(v) else float(v)
+        except Exception:
+            return 0
+
+    def _annotate_list(point_list, color):
+        # 在标记点右下角标注，偏移( +6, -6 )像素
+        for xv, yv in point_list:
+            posv = _pos_at_x(xv)
+            side = "left" if color == "r" else "right"
+            ax.annotate(
+                f"{posv:.0f}",
+                xy=(xv, yv),
+                xytext=(6, -6),
+                textcoords="offset points",
+                ha=side, va="top",
+                fontsize=8,
+                color=color,
+                bbox=dict(boxstyle="round,pad=0.1", fc="white", ec="none", alpha=0.6)
+            )
+
+    # 颜色与之前散点一致：
+    # Open Long = 绿色；Open Short = 红色；Close Long = 红色；Close Short = 绿色
     if points["open_long"]:
         xs, ys = zip(*points["open_long"])
         plt.scatter(xs, ys, marker="^", s=50, c="r", label="Open Long")
-
-    # Open Short：绿色 ▼（下三角）
+        _annotate_list(points["open_long"], color="r")
     if points["open_short"]:
         xs, ys = zip(*points["open_short"])
         plt.scatter(xs, ys, marker="v", s=50, c="g", label="Open Short")
-
-    # Close Long：红色 ×
+        _annotate_list(points["open_short"], color="g")
     if points["close_long"]:
         xs, ys = zip(*points["close_long"])
         plt.scatter(xs, ys, marker="x", s=60, c="r", linewidths=1.8, label="Close Long")
-
-    # Close Short：绿色 ×
+        _annotate_list(points["close_long"], color="r")
     if points["close_short"]:
         xs, ys = zip(*points["close_short"])
         plt.scatter(xs, ys, marker="x", s=60, c="g", linewidths=1.8, label="Close Short")
+        _annotate_list(points["close_short"], color="g")
+
+    #
+    #
+    # # Open Long：红色 ▲（上三角）
+    # if points["open_long"]:
+    #     xs, ys = zip(*points["open_long"])
+    #     plt.scatter(xs, ys, marker="^", s=50, c="r", label="Open Long")
+    #
+    # # Open Short：绿色 ▼（下三角）
+    # if points["open_short"]:
+    #     xs, ys = zip(*points["open_short"])
+    #     plt.scatter(xs, ys, marker="v", s=50, c="g", label="Open Short")
+    #
+    # # Close Long：红色 ×
+    # if points["close_long"]:
+    #     xs, ys = zip(*points["close_long"])
+    #     plt.scatter(xs, ys, marker="x", s=60, c="r", linewidths=1.8, label="Close Long")
+    #
+    # # Close Short：绿色 ×
+    # if points["close_short"]:
+    #     xs, ys = zip(*points["close_short"])
+    #     plt.scatter(xs, ys, marker="x", s=60, c="g", linewidths=1.8, label="Close Short")
 
     plt.title("Price with Trade Markers")
     plt.xlabel("datetime" if x_label=="datetime" else x_label)
