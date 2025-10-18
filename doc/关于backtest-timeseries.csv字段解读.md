@@ -52,3 +52,9 @@ BacktestingEngine.calculate_result() 产物）：
 * drawdown_t = balance_t - highlevel_t (≤ 0)
 
 * ddpercent_t = drawdown_t / highlevel_t × 100
+
+
+# 操作规则
+# last_qsx2为1时：
+* last_dnl2=1, 使用open_price平掉所有仓位，再以开盘价建一手（昨天仓位不平）：昨天新建仓位为0，今天保留一手，否则保留昨仓
+* 
