@@ -63,13 +63,41 @@ def guess_interval_from_csv(dt_series: pd.Series):
     return Interval.DAILY
 
 
+def read_csv_as_shanghai(csv_path: str,
+                         dt_col: str = "datetime") -> pd.DataFrame:
+    """
+    读取按 Asia/Shanghai 写入的 CSV，保证读入后时间不变，
+    并将时间统一为 tz-aware 的 pd.Timestamp[Asia/Shanghai]。
+    """
+    # 先读，不要让 pandas 猜 UTC（不要 utc=True）
+    df = pd.read_csv(csv_path)
+
+    if dt_col not in df.columns:
+        raise KeyError(f"未找到时间列: {dt_col}")
+
+    # 解析为 datetime（仍然是 naive）
+    s = pd.to_datetime(df[dt_col], errors="coerce", infer_datetime_format=True)
+
+    # 如果已经带时区，就转到上海；若无时区，就“本地化”为上海（不改变数值）
+    if getattr(s.dt, "tz", None) is None:
+        # 关键点：tz_localize 不会改动数值，只是加上 +08:00 标签
+        s = s.dt.tz_localize("Asia/Shanghai")
+    else:
+        # 这分支通常用不到；以防万一数据本身带了别的时区
+        s = s.dt.tz_convert("Asia/Shanghai")
+
+    df[dt_col] = s
+    return df
+
+
 def import_csv_to_db(csv_path: Path, symbol: str, exchange, interval, tz: Optional[str] = "Asia/Shanghai"):
     """CSV→DB：补 volume/open_interest，时间本地化→naive，返回 (start_dt, end_dt)"""
     from vnpy.trader.object import BarData
     from vnpy.trader.database import get_database
 
     assert csv_path.exists(), f"CSV 不存在：{csv_path}"
-    df = pd.read_csv(csv_path)
+    df = read_csv_as_shanghai(csv_path)
+    # df = pd.read_csv(csv_path)
 
     df = normalize_datetime_columns(df, prefer=["datetime"])
     df.columns = [c.lower().strip() for c in df.columns]
@@ -82,16 +110,16 @@ def import_csv_to_db(csv_path: Path, symbol: str, exchange, interval, tz: Option
         df["volume"] = 0
     if "open_interest" not in df.columns:
         df["open_interest"] = 0
-
+    #
     dt = pd.to_datetime(df["datetime"], errors="raise")
-    # 保证列本身为 Timestamp（datetime64[ns]）
-    df["datetime"] = dt
-    if tz:
-        try:
-            dt = dt.dt.tz_localize(tz).dt.tz_convert(None)
-        except Exception:
-            dt = dt.dt.tz_convert(None) if hasattr(dt.dt, "tz_convert") else dt
-
+    # # 保证列本身为 Timestamp（datetime64[ns]）
+    # df["datetime"] = dt
+    # if tz:
+    #     try:
+    #         dt = dt.dt.tz_localize(tz).dt.tz_convert(None)
+    #     except Exception:
+    #         dt = dt.dt.tz_convert(None) if hasattr(dt.dt, "tz_convert") else dt
+    #
     bars: List[BarData] = []
     for i, row in df.iterrows():
         bars.append(BarData(

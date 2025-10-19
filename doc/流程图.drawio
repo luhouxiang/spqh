@@ -238,7 +238,7 @@
         <mxCell id="Tevazssmf9BqdOUOpS-G-33" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="Tevazssmf9BqdOUOpS-G-8" target="Tevazssmf9BqdOUOpS-G-32" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="Tevazssmf9BqdOUOpS-G-8" value="今天仓位=昨天新建仓位+1手+计算的初始加仓数" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;" parent="1" vertex="1">
+        <mxCell id="Tevazssmf9BqdOUOpS-G-8" value="今天仓位=昨天新建仓位+1手+计算的初始加仓数 +&amp;nbsp;晚天未完成订单" style="rounded=1;whiteSpace=wrap;html=1;fontSize=14;" parent="1" vertex="1">
           <mxGeometry x="500" y="170" width="120" height="60" as="geometry" />
         </mxCell>
         <mxCell id="Tevazssmf9BqdOUOpS-G-11" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;fontSize=14;" parent="1" source="Tevazssmf9BqdOUOpS-G-9" target="Tevazssmf9BqdOUOpS-G-3" edge="1">
@@ -289,10 +289,10 @@
         <mxCell id="Tevazssmf9BqdOUOpS-G-30" style="edgeStyle=orthogonalEdgeStyle;rounded=0;orthogonalLoop=1;jettySize=auto;html=1;exitX=0.5;exitY=1;exitDx=0;exitDy=0;" parent="1" source="Tevazssmf9BqdOUOpS-G-27" target="Tevazssmf9BqdOUOpS-G-28" edge="1">
           <mxGeometry relative="1" as="geometry" />
         </mxCell>
-        <mxCell id="Tevazssmf9BqdOUOpS-G-27" value="开盘价&amp;lt;dnl1" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+        <mxCell id="Tevazssmf9BqdOUOpS-G-27" value="开盘价&amp;lt;sx1-dnl1" style="rhombus;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="740" y="170" width="80" height="80" as="geometry" />
         </mxCell>
-        <mxCell id="Tevazssmf9BqdOUOpS-G-28" value="小于1倍的为返1&lt;br&gt;小于2倍的为返2" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
+        <mxCell id="Tevazssmf9BqdOUOpS-G-28" value="小于返回1&lt;div&gt;&lt;br/&gt;&lt;/div&gt;" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="720" y="290" width="120" height="60" as="geometry" />
         </mxCell>
         <mxCell id="Tevazssmf9BqdOUOpS-G-32" value="大于5返回5，否则返回前数" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
@@ -346,7 +346,7 @@
         <mxCell id="Tevazssmf9BqdOUOpS-G-52" value="&lt;h1 style=&quot;margin-top: 0px;&quot;&gt;Heading&lt;/h1&gt;&lt;p&gt;现在第一天的盘中订单，到第二天多仓时，需要考虑的是，开盘时先计算应持仓多少，算出来后将原有订单转换成持仓即可.&lt;/p&gt;" style="text;html=1;whiteSpace=wrap;overflow=hidden;rounded=0;" parent="1" vertex="1">
           <mxGeometry x="470" y="470" width="180" height="120" as="geometry" />
         </mxCell>
-        <mxCell id="e8vPSsM3sqpBRudG_QCs-1" value="开盘价将昨天的订单撮合" style="rounded=1;whiteSpace=wrap;html=1;" vertex="1" parent="1">
+        <mxCell id="e8vPSsM3sqpBRudG_QCs-1" value="开盘价将昨天的订单撮合" style="rounded=1;whiteSpace=wrap;html=1;" parent="1" vertex="1">
           <mxGeometry x="354" y="400" width="120" height="60" as="geometry" />
         </mxCell>
       </root>
