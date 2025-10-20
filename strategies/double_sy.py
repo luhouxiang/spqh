@@ -196,11 +196,11 @@ class DoubleSyStrategy(LoggingCtaTemplate):
         )
         return row
 
-    def calc_init_position(self, bar: BarData, row: SyRow):
+    def calc_init_position(self, open_price, row: SyRow):
         """计算的初始加仓数,只有开盘价小于昨天的下轨才能加一个仓位，否则初始加仓数为0"""
         if np.isnan(row.sx1) or np.isnan(row.dnl1):
             return 0
-        if bar.open_price < row.sx1 - row.dnl1:
+        if open_price < row.sx1 - row.dnl1:
             return 1
         return 0
 
@@ -260,7 +260,9 @@ class DoubleSyStrategy(LoggingCtaTemplate):
         今天应有仓位 = 昨天新建仓位+1手+计算的初始加仓数+昨天未完成订单
         大于5手返回5，否则返回今天应有仓位
         """
-        position = self._get_prev_new_position(ts) + 1 + self.calc_init_position(bar) + self._get_prev_pending_order(ts)
+        row = self._get_prev_feats(ts)
+        position = (self._get_prev_new_position(ts) + 1 + self.calc_init_position(bar.open_price, row)
+                    + self._get_prev_pending_order(ts))
         return position if position < self.max_lots else self.max_lots
 
     def clear_position(self, price: float):
@@ -277,7 +279,7 @@ class DoubleSyStrategy(LoggingCtaTemplate):
         self.write_log(f"清仓：价格 {price}，平掉 {closed_lots} 手（原 {lots_before} 手）")
         self.put_event()    # 这儿动作过后，考虑自动撮合 TODO: 稍后测试这一块
 
-    def add_position(self, bar: BarData, count: int, price: float, longer: bool):
+    def add_position(self, count: int, price: float, is_long: bool):
         """根据给定的价格，增加对应的仓位"""
         if count <= 0:
             return 0
@@ -287,7 +289,7 @@ class DoubleSyStrategy(LoggingCtaTemplate):
             self.write_log("加仓请求被忽略：已达到最大手数上限")
             return 0
         # 下单（一次性按手数聚合成交量）
-        if longer:
+        if is_long:
             self.buy(price, volume=to_add)
             self.write_log(f"现持 {self.pos} 手, 当前加仓：价格 {price}，新增 {to_add} 手")
         else:
@@ -295,7 +297,7 @@ class DoubleSyStrategy(LoggingCtaTemplate):
             self.write_log(f"现持 {self.pos} 手, 当前加仓：价格 {price}，新增 {-to_add} 手")
         self.put_event()
 
-    def sub_position(self, bar: BarData, count: int, price: float):
+    def sub_position(self, count: int, price: float, is_long: bool):
         """根据给定的价格，平掉对应的仓位"""
         if count <= 0:
             return 0
@@ -304,12 +306,35 @@ class DoubleSyStrategy(LoggingCtaTemplate):
             self.write_log("减仓请求被忽略：当前无可平手数")
             return 0
         # 发单：多仓用 sell；若意外出现空仓则用 cover（兜底）
-        if self.pos >= 0:
+        if is_long:
             self.sell(price, volume=to_close)
         else:
             self.cover(price, volume=to_close)
         self.write_log(f"现持 {self.lots} 手, 减仓：价格 {price}，平掉 {to_close} 手")
         self.put_event()
+
+    def _force_match_now(self, bar: BarData) -> None:
+        """
+        仅用于回测：在当前bar内立即撮合挂单（限价/本地止损单）。
+        兼容不同版本的函数签名（带bar或不带bar）。
+        """
+        eng = getattr(self, "cta_engine", None)
+        if eng is None:
+            return
+
+        def _call(func_name: str):
+            fn = getattr(eng, func_name, None)
+            if callable(fn):
+                try:
+                    fn(bar)  # 优先带 bar
+                except TypeError:
+                    try:
+                        fn()  # 再试无参
+                    except Exception:
+                        pass
+
+        _call("cross_limit_order")
+        _call("cross_stop_order")
 
     # ---------------- 主体逻辑（只做多，日内最多加2手） ----------------
     def on_bar(self, bar: BarData):
@@ -332,14 +357,17 @@ class DoubleSyStrategy(LoggingCtaTemplate):
             real_position = self._get_cur_position(bar.datetime)
             if expected_position * real_position < 0:   # 期望仓位和实际仓位相反，只认实际仓位
                 # 先清仓，再建仓
-                pass
+                self.clear_position(bar.open_price)
+                self._force_match_now(bar)
+                self.add_position(expected_position, bar.open_price, expected_position > 0)
+                self._force_match_now(bar)
             else:
                 if abs(expected_position) - abs(real_position) > 0:
-                    # 加仓
-                    pass
+                    self.add_position(expected_position, bar.open_price, expected_position > 0)
+                    self._force_match_now(bar)
                 elif abs(expected_position) - abs(real_position) < 0:
-                    # 减仓
-                    pass
+                    self.sub_position(expected_position, bar.open_price, expected_position > 0)
+                    self._force_match_now(bar)
         else:
             pass
 
