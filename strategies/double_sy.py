@@ -346,30 +346,39 @@ class DoubleSyStrategy(LoggingCtaTemplate):
         if f_prev is None:
             self.put_event()
             return
-
+        """
+        1、qsx2_prev为1时做多， 否则平多
+        2、dnl2_prev为震荡区间，表达的为重新开始， 为了解决反复重新开始，将昨天新建的仓位保留，然后重新开始
+        3、开盘价低于第一个加仓台阶，以开盘价加仓1次
+        4、最低价低于加仓台阶，且没有加满，则加仓1次或2次
+        5、来不及加的仓位记入第二天待加仓
+        """
         self.qsx2_prev = int(f_prev.qsx2) if not np.isnan(f_prev.qsx2) else 0
         self.dnl2_prev = int(f_prev.dnl2) if not np.isnan(f_prev.dnl2) else 0
         self.sx1_prev = int(f_prev.sx1) if not np.isnan(f_prev.sx1) else 0
-
-        if self.dnl2_prev == 1:
-            # 仓位调整
-            expected_position = self.calc_today_position(bar, bar.datetime)
-            real_position = self._get_cur_position(bar.datetime)
-            if expected_position * real_position < 0:   # 期望仓位和实际仓位相反，只认实际仓位
-                # 先清仓，再建仓
-                self.clear_position(bar.open_price)
-                self._force_match_now(bar)
-                self.add_position(expected_position, bar.open_price, expected_position > 0)
-                self._force_match_now(bar)
-            else:
-                if abs(expected_position) - abs(real_position) > 0:
+        if self.qsx2_prev == 1:  # 为1时做多，否则平多
+            if self.dnl2_prev == 1:  # 区间标志
+                # 仓位调整
+                expected_position = self.calc_today_position(bar, bar.datetime)
+                real_position = self._get_cur_position(bar.datetime)
+                if expected_position * real_position < 0:  # 期望仓位和实际仓位相反，只认实际仓位
+                    # 先清仓，再建仓
+                    self.clear_position(bar.open_price)
+                    self._force_match_now(bar)
                     self.add_position(expected_position, bar.open_price, expected_position > 0)
                     self._force_match_now(bar)
-                elif abs(expected_position) - abs(real_position) < 0:
-                    self.sub_position(expected_position, bar.open_price, expected_position > 0)
-                    self._force_match_now(bar)
+                else:
+                    if abs(expected_position) - abs(real_position) > 0:
+                        self.add_position(expected_position, bar.open_price, expected_position > 0)
+                        self._force_match_now(bar)
+                    elif abs(expected_position) - abs(real_position) < 0:
+                        self.sub_position(expected_position, bar.open_price, expected_position > 0)
+                        self._force_match_now(bar)
+            else:
+                pass
         else:
-            pass
+            self.clear_position(bar.open_price)
+            self._force_match_now(bar)
 
         self.put_event()
         return
