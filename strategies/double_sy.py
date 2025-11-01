@@ -12,7 +12,7 @@ from vnpy_ctastrategy import CtaTemplate
 from vnpy.trader.object import BarData
 from vnpy.trader.utility import ArrayManager
 from vnpy.trader.constant import Interval, Direction, Offset
-
+import logging
 # 双鱼特征字段全集（库内列名）
 SY_COLS = ["lj","qs1","dnl1","qsx1","sx1","qs2","dnl2","qsx2","sx2","phqd","lsqd"]
 
@@ -196,13 +196,63 @@ class DoubleSyStrategy(LoggingCtaTemplate):
         )
         return row
 
-    def calc_init_position(self, open_price, row: SyRow):
-        """计算的初始加仓数,只有开盘价小于昨天的下轨才能加一个仓位，否则初始加仓数为0"""
+    def calc_delta_position(self, price, row: SyRow, is_open_price: bool=True) -> int:
+        """
+        计算开盘后的仓位变化数:
+        - 如果是开盘价来计算最多返回1
+        - 如果是最低价来计算最多返回2
+
+        返回: int
+        """
         if np.isnan(row.sx1) or np.isnan(row.dnl1):
             return 0
-        if open_price < row.sx1 - row.dnl1:
-            return 1
-        return 0
+        if is_open_price:
+            if price < row.sx1 - row.dnl1:
+                return 1
+            else:
+                return 0
+        else:
+            if price < row.sx1 - row.dnl1 - row.dnl1:
+                return 2
+            elif price < row.sx1 - row.dnl1:
+                return 1
+            else:
+                return 0
+
+    def calc_open_add_after_open(self, bar: BarData) -> int:
+        """
+        计算开盘后是否应新增 1 手仓位。
+
+        规则：若昨日的 sx1 或 dnl1 缺失返回 0；若当日开盘价 < (sx1 - dnl1) 则返回 1，否则返回 0。
+
+        参数：
+            - bar: 当日的 BarData（用于获取开盘价及时间戳）
+
+        返回：0 或 1
+        """
+        # 取到昨天的特征行用于判断
+        row = self._get_prev_feats(bar.datetime)
+        if row is None:
+            return 0
+
+        delta = 0
+        try:
+            delta = self.calc_delta_position(bar.open_price, row, True)
+        except Exception:
+            pass
+        return delta
+    
+    def calc_low_add_after_lowest(self, bar: BarData) -> int:
+        row = self._get_prev_feats(bar.datetime)
+        if row is None:
+            return 0
+
+        delta = 0
+        try:
+            delta = self.calc_delta_position(bar.low_price, row, False)
+        except Exception:
+            pass
+        return delta
 
     def _get_prev_new_position(self, ts: pd.Timestamp) -> int:
         """获取昨天新增的仓位
@@ -228,18 +278,10 @@ class DoubleSyStrategy(LoggingCtaTemplate):
         else:
             return 0
 
-    def _get_cur_position(self, ts: pd.Timestamp) -> int:
+    def _get_cur_position(self) -> int:
         """获取到今天的仓位
         """
-        if self._position_df is None or len(self._position_df) == 0:
-            return 0
-
-        ts = _ensure_tz_ts(ts, self.feature_timezone)
-
-        pos = self._position_df.searchsorted(ts, side="right")
-        if pos < 0:
-            return 0
-        return self._position_df[pos]["position"]
+        return self.pos
 
     def _get_prev_pending_order(self, ts: pd.Timestamp) -> int:
         """获取昨天未完成的订单（返回0表示没有，负数表示做空数，正数表示做多数，目的是在开盘时用开盘价兑换
@@ -264,6 +306,22 @@ class DoubleSyStrategy(LoggingCtaTemplate):
         position = (self._get_prev_new_position(ts) + 1 + self.calc_init_position(bar.open_price, row)
                     + self._get_prev_pending_order(ts))
         return position if position < self.max_lots else self.max_lots
+
+    def calc_open_expected_position(self, bar: BarData) -> int:
+            """计算震荡日开盘时的期望持仓：
+            昨天新建的多头仓位 + 1，并向上限 self.max_lots 截断。
+
+            参数：
+                - bar: 当日的 BarData（用于获取开盘价及时间戳）
+
+            返回：int（期望持仓手数，>=0）。
+            """
+            # 昨天新建的仓位（只取新增的多头仓位数）
+            yesterday_new = int(self._get_prev_new_position(bar.datetime))
+            expected = yesterday_new + 1
+            return int(expected)
+        
+    
 
     def clear_position(self, price: float):
         """根据给定的价格，清除所有的仓位"""
@@ -337,51 +395,122 @@ class DoubleSyStrategy(LoggingCtaTemplate):
         _call("cross_stop_order")
 
     # ---------------- 主体逻辑（只做多，日内最多加2手） ----------------
+    def do_clear_long(self, bar: BarData):
+        """平掉当前所有多头仓位（以当日开盘价），并立即撮合（回测需强制撮合）。"""
+        # 仅在有净多仓时执行平多动作
+        if self.pos > 0:
+            # 使用已有的 clear_position 辅助方法进行平仓和日志记录
+            self.clear_position(bar.open_price)
+            # 在回测环境下尝试立刻撮合挂单/成交
+            try:
+                self._force_match_now(bar)
+            except Exception:
+                # 若引擎不支持强制撮合，仍保持平仓指令已下
+                pass
+
+    def do_open_long(self, bar: BarData):
+        """简化：若为震荡日（self.dnl2_prev == 1），计算今日开盘应持仓：
+        昨天新成交的多头仓位 + 1，且总体不超过 self.max_lots。
+
+        返回计算得到的期望仓位（int），在非震荡日返回 None。
+        """
+        if self.dnl2_prev == 1:  # 如果是在震荡日，则重新计算预期仓位
+            expected = self.calc_open_expected_position(bar)
+        else:                   # 否则保持原有持仓+未完成订单
+            expected = self.pos + self._get_prev_pending_order(bar.datetime)
+            # 记录日志并返回
+        label_1 = "普通日"
+        if self.dnl2_prev == 1:
+            label_1 = "震荡日"
+
+        dlt = self.calc_delta_position(bar.open_price, self._get_prev_feats(bar.datetime), True)
+        expected_position = min(self.max_lots, dlt + expected + self._get_prev_new_position(bar.datetime))
+        real_position = self.pos
+        if expected_position * real_position < 0:  # 期望仓位和实际仓位相反，先清仓，再走期望仓位
+            logging.info(
+                f"[{self.am.datetime_array[-1]}]{label_1}开盘前期望持仓：{expected}手，开盘时期望持仓:{expected_position}手，实际仓位{real_position}手")
+            # 先清仓，再建仓
+            self.clear_position(bar.open_price)
+            self._force_match_now(bar)
+            self.add_position(expected_position, bar.open_price, expected_position > 0)
+            self._force_match_now(bar)
+        else:
+            add_pos = expected_position - real_position
+            if add_pos != 0:
+                logging.info(f"[{self.am.datetime_array[-1]}]{label_1}开盘前期望持仓：{expected}手，开盘时期望持仓:[{self.pos}]/[{expected_position}]手")
+            if expected_position - real_position > 0:
+                self.add_position(add_pos, bar.open_price, add_pos > 0)
+                self._force_match_now(bar)
+            elif expected_position - real_position < 0:
+                self.sub_position(abs(add_pos), bar.open_price, add_pos > 0)
+                self._force_match_now(bar)
+                
+        return expected
+
     def on_bar(self, bar: BarData):
         self.am.update_bar(bar)
         if not self.am.inited:
             return
-
-        f_prev = self._get_prev_feats(bar.datetime)
+    
+        f_prev = self._get_prev_feats(bar.datetime)  # 找不到之前的时间点，也退出
         if f_prev is None:
             self.put_event()
             return
-        """
-        1、qsx2_prev为1时做多， 否则平多
-        2、dnl2_prev为震荡区间，表达的为重新开始， 为了解决反复重新开始，将昨天新建的仓位保留，然后重新开始
-        3、开盘价低于第一个加仓台阶，以开盘价加仓1次
-        4、最低价低于加仓台阶，且没有加满，则加仓1次或2次
-        5、来不及加的仓位记入第二天待加仓
-        """
         self.qsx2_prev = int(f_prev.qsx2) if not np.isnan(f_prev.qsx2) else 0
         self.dnl2_prev = int(f_prev.dnl2) if not np.isnan(f_prev.dnl2) else 0
         self.sx1_prev = int(f_prev.sx1) if not np.isnan(f_prev.sx1) else 0
-        if self.qsx2_prev == 1:  # 为1时做多，否则平多
-            if self.dnl2_prev == 1:  # 区间标志
-                # 仓位调整
-                expected_position = self.calc_today_position(bar, bar.datetime)
-                real_position = self._get_cur_position(bar.datetime)
-                if expected_position * real_position < 0:  # 期望仓位和实际仓位相反，只认实际仓位
-                    # 先清仓，再建仓
-                    self.clear_position(bar.open_price)
-                    self._force_match_now(bar)
-                    self.add_position(expected_position, bar.open_price, expected_position > 0)
-                    self._force_match_now(bar)
-                else:
-                    if abs(expected_position) - abs(real_position) > 0:
-                        self.add_position(expected_position, bar.open_price, expected_position > 0)
-                        self._force_match_now(bar)
-                    elif abs(expected_position) - abs(real_position) < 0:
-                        self.sub_position(expected_position, bar.open_price, expected_position > 0)
-                        self._force_match_now(bar)
-            else:
-                pass
+        if self.qsx2_prev == 1:  # qsx2为1时开始做多
+            self.do_open_long(bar)
         else:
-            self.clear_position(bar.open_price)
-            self._force_match_now(bar)
+            self.do_clear_long(bar)    # 为0时平仓停止做多
+            
+            
 
-        self.put_event()
-        return
+    # def on_bar(self, bar: BarData):
+    #     self.am.update_bar(bar)
+    #     if not self.am.inited:
+    #         return
+
+    #     f_prev = self._get_prev_feats(bar.datetime)
+    #     if f_prev is None:
+    #         self.put_event()
+    #         return
+    #     """
+    #     1、qsx2_prev为1时做多， 否则平多
+    #     2、dnl2_prev为震荡区间，表达的为重新开始。保留昨天加仓数+1
+    #     3、开盘价低于第一个加仓台阶，以开盘价加仓1次
+    #     4、最低价低于加仓台阶，且没有加满，则加仓1次或2次
+    #     5、来不及加的仓位记入第二天待加仓
+    #     """
+    #     self.qsx2_prev = int(f_prev.qsx2) if not np.isnan(f_prev.qsx2) else 0
+    #     self.dnl2_prev = int(f_prev.dnl2) if not np.isnan(f_prev.dnl2) else 0
+    #     self.sx1_prev = int(f_prev.sx1) if not np.isnan(f_prev.sx1) else 0
+    #     if self.qsx2_prev == 1:  # 为1时做多，否则平多
+    #         if self.dnl2_prev == 1:  # 区间标志
+    #             # 仓位调整
+    #             expected_position = self.calc_today_position(bar, bar.datetime)
+    #             real_position = self._get_cur_position(bar.datetime)
+    #             if expected_position * real_position < 0:  # 期望仓位和实际仓位相反，只认实际仓位
+    #                 # 先清仓，再建仓
+    #                 self.clear_position(bar.open_price)
+    #                 self._force_match_now(bar)
+    #                 self.add_position(expected_position, bar.open_price, expected_position > 0)
+    #                 self._force_match_now(bar)
+    #             else:
+    #                 if abs(expected_position) - abs(real_position) > 0:
+    #                     self.add_position(expected_position, bar.open_price, expected_position > 0)
+    #                     self._force_match_now(bar)
+    #                 elif abs(expected_position) - abs(real_position) < 0:
+    #                     self.sub_position(expected_position, bar.open_price, expected_position > 0)
+    #                     self._force_match_now(bar)
+    #         else:
+    #             pass
+    #     else:
+    #         self.clear_position(bar.open_price)
+    #         self._force_match_now(bar)
+
+    #     self.put_event()
+    #     return
 
 
 

@@ -204,13 +204,35 @@ def run_backtest_and_output(
 
     print("加载数据..."); engine.load_data()
     print("开始回测..."); engine.run_backtesting()
-    print("计算绩效..."); df = engine.calculate_result(); stats = engine.calculate_statistics()
+    print("计算绩效...");
+    df = engine.calculate_result()
+    stats = engine.calculate_statistics()
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # —— 确保 timeseries 中带有 datetime 列，方便后续统一时间横轴
     idx = pd.to_datetime(df.index)
     df = df.assign(datetime=idx)
+
+    # 在写 CSV 前清理 trades 列中嵌入的 datetime.datetime(...) 片段，
+    # 避免把可执行/带时区的构造写入 CSV 文本。
+    if "trades" in df.columns:
+        try:
+            # 优先用更稳健的解析/清理：若包含 TradeData(...) 则逐条清理其 datetime 属性
+            def _clean_cell(x):
+                if x is None:
+                    return x
+                s = str(x)
+                if 'TradeData(' in s:
+                    return _clean_tradedata_list_repr(s)
+                return s
+
+            df["trades"] = df["trades"].apply(lambda x: _clean_cell(x) if pd.notna(x) else x)
+        except Exception as e:
+            # 不要因为清理失败而中断主流程，继续写原始内容
+            print(e)
+            pass
+
     (out_dir/"backtest_timeseries.csv").write_text(df.to_csv(index=False), encoding="utf-8")
 
     with open(out_dir/"stats.json", "w", encoding="utf-8") as f:
@@ -234,6 +256,28 @@ def run_backtest_and_output(
             plt.savefig(out_dir/"balance.png", dpi=150)
         plt.close()
         print(f"已保存：{out_dir/'balance.png'}")
+        # 尝试把价格面板与资金曲线合并成一张图（垂直叠加，共用宽度/时间轴视觉对齐）
+        try:
+            from PIL import Image
+            price_path = out_dir / "_panel_price.png"
+            balance_path = out_dir / "balance.png"
+            if price_path.exists() and balance_path.exists():
+                price_img = Image.open(price_path).convert("RGB")
+                bal_img = Image.open(balance_path).convert("RGB")
+                # 统一宽度为两者最小宽度，按比例缩放高度
+                w = min(price_img.width, bal_img.width)
+                if price_img.width != w:
+                    price_img = price_img.resize((w, int(price_img.height * w / price_img.width)))
+                if bal_img.width != w:
+                    bal_img = bal_img.resize((w, int(bal_img.height * w / bal_img.width)))
+                combo = Image.new("RGB", (w, price_img.height + bal_img.height), (255, 255, 255))
+                combo.paste(price_img, (0, 0))
+                combo.paste(bal_img, (0, price_img.height))
+                combo_path = out_dir / "price_balance_combined.png"
+                combo.save(combo_path, format="PNG")
+                print(f"已生成合并图：{combo_path}")
+        except Exception as e:
+            print(f"[WARN] 价格+净值合并图生成失败：{e}")
     except Exception as e:
         print(f"保存图像失败：{e}")
 
@@ -266,6 +310,175 @@ def _parse_trades_cell(cell):
         return obj
     return []
 
+
+def _strip_datetime_fragments_in_trades(s: str) -> str:
+    """
+    Remove inline `datetime=...` fragments (e.g. datetime=datetime.datetime(...))
+    from a trades cell string. Returns the cleaned string. Works defensively on
+    textual representations produced by the backtesting engine.
+    """
+    if s is None:
+        return s
+    s = str(s)
+    if "datetime=" not in s:
+        return s
+
+    out = []
+    i = 0
+    L = len(s)
+    while i < L:
+        idx = s.find('datetime=', i)
+        if idx == -1:
+            out.append(s[i:])
+            break
+
+        out.append(s[i:idx])
+
+        # try to find a following datetime.datetime(...) call
+        call_idx = s.find('datetime.datetime', idx)
+        if call_idx == -1:
+            # fallback: skip until next comma or closing paren
+            j = idx
+            while j < L and s[j] not in ',)':
+                j += 1
+            i = j
+            if i < L and s[i] == ',':
+                i += 1
+            continue
+
+        paren_start = s.find('(', call_idx)
+        if paren_start == -1:
+            i = call_idx + len('datetime.datetime')
+            continue
+
+        depth = 0
+        j = paren_start
+        while j < L:
+            if s[j] == '(':
+                depth += 1
+            elif s[j] == ')':
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+
+        # skip the whole fragment and an optional trailing comma
+        i = j
+        if i < L and s[i] == ',':
+            i += 1
+
+    cleaned = ''.join(out)
+    cleaned = cleaned.replace(', ,', ',').replace(',  ,', ',')
+    cleaned = cleaned.replace(', ]', ']').replace(',)', ')')
+    return cleaned
+
+
+def _extract_tradedata_items(s: str) -> list:
+    """
+    从 trades 字符串中抽取所有顶层的 TradeData(...) 表达式，返回字符串列表。
+    若未找到 TradeData 表达式，则返回空列表。
+    """
+    if s is None:
+        return []
+    s = str(s)
+    items = []
+    i = 0
+    L = len(s)
+    while True:
+        idx = s.find('TradeData(', i)
+        if idx == -1:
+            break
+        # 找到 '(' 的位置
+        paren = s.find('(', idx)
+        if paren == -1:
+            i = idx + len('TradeData')
+            continue
+        depth = 0
+        j = paren
+        while j < L:
+            if s[j] == '(':
+                depth += 1
+            elif s[j] == ')':
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+        items.append(s[idx:j])
+        i = j
+    return items
+
+
+def _remove_datetime_from_repr(item: str) -> str:
+    """Remove datetime=... fragments from a single TradeData(...) string."""
+    if item is None:
+        return item
+    s = str(item)
+    if 'datetime=' not in s:
+        return s
+    out = []
+    i = 0
+    L = len(s)
+    while i < L:
+        idx = s.find('datetime=', i)
+        if idx == -1:
+            out.append(s[i:])
+            break
+        out.append(s[i:idx])
+
+        # try to find datetime.datetime(...) after '='
+        call_idx = s.find('datetime.datetime', idx)
+        if call_idx == -1:
+            # skip until comma or closing paren
+            j = idx
+            while j < L and s[j] not in ',)':
+                j += 1
+            i = j
+            if i < L and s[i] == ',':
+                i += 1
+            continue
+
+        paren_start = s.find('(', call_idx)
+        if paren_start == -1:
+            i = call_idx + len('datetime.datetime')
+            continue
+
+        depth = 0
+        j = paren_start
+        while j < L:
+            if s[j] == '(':
+                depth += 1
+            elif s[j] == ')':
+                depth -= 1
+                if depth == 0:
+                    j += 1
+                    break
+            j += 1
+
+        i = j
+        # skip optional following comma
+        if i < L and s[i] == ',':
+            i += 1
+
+    cleaned = ''.join(out)
+    cleaned = cleaned.replace(', ,', ',').replace(',  ,', ',')
+    cleaned = cleaned.replace(', )', ')').replace('(, ', '(')
+    return cleaned
+
+
+def _clean_tradedata_list_repr(s: str) -> str:
+    """
+    Given a trades cell string, extract TradeData(...) items, remove their
+    datetime fields, and return a reconstructed list string. If no
+    TradeData(...) found, fall back to _strip_datetime_fragments_in_trades.
+    """
+    items = _extract_tradedata_items(s)
+    if not items:
+        return _strip_datetime_fragments_in_trades(s)
+    cleaned_items = [_remove_datetime_from_repr(it) for it in items]
+    return '[' + ','.join(cleaned_items) + ']'
+
 def _classify_trade(tr):
     d = str(tr.get("direction", "")).lower()
     o = str(tr.get("offset", "")).lower()
@@ -282,9 +495,16 @@ def _classify_trade(tr):
 def _extract_trade_time(tr, fallback_ts):
     import pandas as pd
     for k in ["time", "datetime", "dt", "trade_time", "ts"]:
-        if k in tr and tr[k]:
+        if k in tr:
+            val = tr.get(k)
+            # Avoid ambiguous truth-value checks on numpy/pandas objects.
+            # Treat None or empty-string as missing.
+            if val is None:
+                continue
             try:
-                return pd.to_datetime(tr[k])
+                if str(val).strip() == "":
+                    continue
+                return pd.to_datetime(val)
             except Exception:
                 pass
     return fallback_ts

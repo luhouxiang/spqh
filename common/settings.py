@@ -22,7 +22,7 @@ CONFIG = {
         "exchange": "SHFE",
         "interval": "1d",           # 留空则自动猜
         "start": "2012-06-01",
-        "end":   "2012-07-15",
+        "end":   "2012-08-15",
         "rate": 0.00025,
         "slippage": 1,
         "size": 15,
